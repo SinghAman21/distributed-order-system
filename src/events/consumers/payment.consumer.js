@@ -1,7 +1,7 @@
 const { getDb } = require('../../db');
 const logger = require('../../logger');
 const config = require('../../config');
-const { produce, createConsumer } = require('../../kafka');
+const { createConsumer } = require('../../kafka');
 const { EVENT_TYPES, createEvent } = require('../schema');
 const { claimEvent } = require('../idempotency');
 
@@ -62,7 +62,6 @@ async function startPaymentConsumer() {
           'UPDATE order_details SET status = $1, failure_reason = $2, updated_at = NOW() WHERE id = $3',
           [nextStatus, failureReason, order.id]
         );
-        await client.query('COMMIT');
 
         const nextType = hasBalance ? EVENT_TYPES.PAYMENT_COMPLETED : EVENT_TYPES.PAYMENT_FAILED;
         const nextEvent = createEvent(nextType, String(order.id), {
@@ -74,7 +73,14 @@ async function startPaymentConsumer() {
           status: nextStatus,
           failureReason,
         });
-        await produce(config.kafka.topics.orderPayment, nextEvent);
+
+        await client.query(
+          `INSERT INTO outbox_events (id, topic, event_key, event_type, payload)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [nextEvent.eventId, config.kafka.topics.orderPayment, String(order.id), nextType, JSON.stringify(nextEvent)]
+        );
+        await client.query('COMMIT');
+
         logger.info({ topic, partition, orderId: order.id, status: nextStatus }, 'Payment event processed');
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {});

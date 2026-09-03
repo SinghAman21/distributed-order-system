@@ -14,7 +14,8 @@
     "worker:payment": "node src/payment-worker.js",
     "worker:inventory": "node src/inventory-worker.js",
     "worker:notification": "node src/notification-worker.js",
-    "worker": "node src/payment-worker.js"
+    "worker": "node src/payment-worker.js",
+    "worker:outbox": "node src/outbox-publisher.js"
   },
   "keywords": [
     "orders",

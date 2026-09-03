@@ -57,4 +57,22 @@ CREATE TABLE IF NOT EXISTS processed_events (
     processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+CREATE TABLE outbox_events (
+  id UUID PRIMARY KEY,
+  topic TEXT NOT NULL,
+  event_key TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  status TEXT NOT NULL DEFAULT 'PENDING',
+  attempts INTEGER NOT NULL DEFAULT 0,
+  available_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  locked_at TIMESTAMPTZ,
+  published_at TIMESTAMPTZ,
+  last_error TEXT,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE INDEX outbox_pending_idx
+  ON outbox_events (available_at, created_at)
+  WHERE status = 'PENDING';
 CREATE INDEX IF NOT EXISTS idx_processed_events_order_id ON processed_events (order_id);

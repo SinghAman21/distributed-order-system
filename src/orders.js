@@ -4,7 +4,6 @@ const { getDb } = require('./db');
 const logger = require('./logger');
 const validate = require('./middleware/validate');
 const config = require('./config');
-const { produce } = require('./kafka');
 const { EVENT_TYPES, createEvent } = require('./events/schema');
 const { broadcast } = require('./ws');
 
@@ -33,24 +32,30 @@ const updateStatusSchema = z.object({
 router.post('/', validate(createOrderSchema), async (req, res) => {
   const { userId, inventoryId, quantity } = req.body;
   const db = getDb();
+  const client = await db.connect();
 
   try {
-    const userResult = await db.query('SELECT id FROM users WHERE id = $1', [userId]);
+    await client.query('BEGIN');
+
+    const userResult = await client.query('SELECT id FROM users WHERE id = $1', [userId]);
     if (!userResult.rows.length) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ success: false, error: { code: 'INVALID_USER', message: 'User not found' } });
     }
 
-    const inventoryResult = await db.query(
+    const inventoryResult = await client.query(
       'SELECT inventory_id, cost FROM inventory WHERE inventory_id = $1',
       [inventoryId]
     );
     if (!inventoryResult.rows.length) {
+      await client.query('ROLLBACK');
       return res.status(400).json({ success: false, error: { code: 'INVALID_INVENTORY', message: 'Inventory item not found' } });
     }
 
     const item = inventoryResult.rows[0];
     const totalCost = Number((Number(item.cost) * quantity).toFixed(2));
-    const result = await db.query(
+
+    const result = await client.query(
       `INSERT INTO order_details (user_id, inventory_id, quantity, unit_cost, total_cost, status)
        VALUES ($1, $2, $3, $4, $5, 'PENDING')
        RETURNING *`,
@@ -66,13 +71,24 @@ router.post('/', validate(createOrderSchema), async (req, res) => {
       totalCost: order.total_cost,
       status: order.status,
     });
-    await produce(config.kafka.topics.orderCreated, event);
+
+    await client.query(
+      `INSERT INTO outbox_events (id, topic, event_key, event_type, payload)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [event.eventId, config.kafka.topics.orderCreated, event.orderId, event.eventType, JSON.stringify(event)]
+    );
+
+    await client.query('COMMIT');
+
     broadcast({ type: 'order_event', stage: 'created', orderId: order.id, timestamp: Date.now() });
-    logger.info({ requestId: req.requestId, orderId: order.id }, 'Order captured and creation event published');
+    logger.info({ requestId: req.requestId, orderId: order.id }, 'Order captured');
     return res.status(201).json({ success: true, data: order });
   } catch (err) {
+    await client.query('ROLLBACK');
     logger.error({ requestId: req.requestId, err }, 'Failed to create order');
     return res.status(500).json({ success: false, error: { code: 'DB_ERROR', message: 'Failed to create order' } });
+  } finally {
+    client.release();
   }
 });
 

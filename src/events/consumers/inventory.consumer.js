@@ -1,7 +1,7 @@
 const { getDb } = require('../../db');
 const logger = require('../../logger');
 const config = require('../../config');
-const { produce, createConsumer } = require('../../kafka');
+const { createConsumer } = require('../../kafka');
 const { EVENT_TYPES, createEvent } = require('../schema');
 const { claimEvent } = require('../idempotency');
 
@@ -67,7 +67,6 @@ async function startInventoryConsumer() {
           'UPDATE order_details SET status = $1, failure_reason = $2, updated_at = NOW() WHERE id = $3',
           [nextStatus, failureReason, order.id]
         );
-        await client.query('COMMIT');
 
         const nextType = hasInventory ? EVENT_TYPES.INVENTORY_RESERVED : EVENT_TYPES.INVENTORY_FAILED;
         const nextEvent = createEvent(nextType, String(order.id), {
@@ -79,7 +78,13 @@ async function startInventoryConsumer() {
           status: nextStatus,
           failureReason,
         });
-        await produce(config.kafka.topics.orderInventory, nextEvent);
+
+        await client.query(
+          `INSERT INTO outbox_events (id, topic, event_key, event_type, payload)
+           VALUES ($1, $2, $3, $4, $5)`,
+          [nextEvent.eventId, config.kafka.topics.orderInventory, String(order.id), nextType, JSON.stringify(nextEvent)]
+        );
+        await client.query('COMMIT');
         logger.info({ topic, partition, orderId: order.id, status: nextStatus }, 'Inventory event processed');
       } catch (err) {
         await client.query('ROLLBACK').catch(() => {});

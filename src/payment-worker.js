@@ -1,14 +1,12 @@
 const { initDatabase, closeDatabase } = require('./db');
 const logger = require('./logger');
-const { connectProducer, disconnectProducer, ensureTopics } = require('./kafka');
+
 const { startPaymentConsumer } = require('./events/consumers/payment.consumer');
 
 let consumer;
 
 async function start() {
   await initDatabase();
-  await connectProducer();
-  await ensureTopics();
   consumer = await startPaymentConsumer();
   logger.info('Payment worker started');
 }
@@ -16,7 +14,6 @@ async function start() {
 async function shutdown(signal) {
   logger.info({ signal }, 'Payment worker shutting down');
   if (consumer) await consumer.disconnect();
-  await disconnectProducer();
   await closeDatabase();
   process.exit(0);
 }
