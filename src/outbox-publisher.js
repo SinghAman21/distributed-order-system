@@ -47,7 +47,7 @@ async function reclaimStaleProcessingEvents(client) {
 
 async function fetchPendingEvents(client) {
   const { rows } = await client.query(
-    `SELECT id, topic, event_key, event_type, payload, attempts
+    `SELECT id, event_version, topic, event_key, event_type, payload, attempts
      FROM outbox_events
      WHERE status = 'PENDING'
        AND available_at <= NOW()
@@ -88,8 +88,8 @@ async function markFailed(client, event, error) {
 
   if (isDeadLetter) {
     await client.query(
-      `INSERT INTO outbox_failed_events (id, topic, event_key, event_type, payload, attempts, last_error, created_at)
-       SELECT id, topic, event_key, event_type, payload, attempts + 1, $2, created_at
+      `INSERT INTO outbox_failed_events (id, event_version, topic, event_key, event_type, payload, attempts, last_error, created_at)
+       SELECT id, event_version, topic, event_key, event_type, payload, attempts + 1, $2, created_at
        FROM outbox_events
        WHERE id = $1`,
       [event.id, String(error)]
@@ -152,6 +152,7 @@ async function processBatch() {
               await produce(config.kafka.topics.outboxDlq, {
                 ...payload,
                 eventId: event.id,
+                eventVersion: event.event_version || payload.eventVersion || 1,
                 originalTopic: event.topic,
                 deadLetterReason: String(err.message),
                 attempts: (event.attempts || 0) + 1,
@@ -179,7 +180,7 @@ let running = true;
 async function replayFailedEvents() {
   const db = getDb();
   const { rows: failed } = await db.query(
-    `SELECT id, topic, event_key, event_type, payload, attempts, last_error
+    `SELECT id, event_version, topic, event_key, event_type, payload, attempts, last_error
      FROM outbox_failed_events
      ORDER BY failed_at ASC`
   );
@@ -196,7 +197,10 @@ async function replayFailedEvents() {
       const payload = typeof f.payload === 'string'
         ? JSON.parse(f.payload)
         : f.payload;
-      await produce(f.topic, payload);
+      await produce(f.topic, {
+        ...payload,
+        eventVersion: f.event_version || payload.eventVersion || 1,
+      });
       await db.query('DELETE FROM outbox_failed_events WHERE id = $1', [f.id]);
       logger.info({ eventId: f.id, topic: f.topic }, 'Failed event replayed successfully');
     } catch (err) {

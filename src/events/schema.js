@@ -8,17 +8,35 @@ const EVENT_TYPES = {
   INVENTORY_FAILED: 'INVENTORY_FAILED',
 };
 
-function createEvent(eventType, orderId, payload) {
+const CURRENT_EVENT_VERSION = 1;
+const SUPPORTED_EVENT_VERSIONS = new Set([1]);
+
+function normalizeEvent(event) {
+  const eventVersion = Number(event?.eventVersion || CURRENT_EVENT_VERSION);
+
+  if (!SUPPORTED_EVENT_VERSIONS.has(eventVersion)) {
+    throw new Error(`Unsupported eventVersion: ${eventVersion}`);
+  }
+
   return {
+    ...event,
+    eventVersion,
+  };
+}
+
+function createEvent(eventType, orderId, payload) {
+  return normalizeEvent({
     eventId: randomUUID(),
     eventType,
     orderId,
     payload,
     timestamp: new Date().toISOString(),
-  };
+  });
 }
 
 module.exports = {
   EVENT_TYPES,
+  CURRENT_EVENT_VERSION,
+  normalizeEvent,
   createEvent,
 };

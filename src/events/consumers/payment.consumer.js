@@ -2,7 +2,7 @@ const { getDb } = require('../../db');
 const logger = require('../../logger');
 const config = require('../../config');
 const { createConsumer } = require('../../kafka');
-const { EVENT_TYPES, createEvent } = require('../schema');
+const { EVENT_TYPES, createEvent, normalizeEvent } = require('../schema');
 const { claimEvent } = require('../idempotency');
 
 async function startPaymentConsumer() {
@@ -15,7 +15,7 @@ async function startPaymentConsumer() {
       const value = message.value?.toString();
       if (!value) return;
 
-      const event = JSON.parse(value);
+      const event = normalizeEvent(JSON.parse(value));
       if (event.eventType !== EVENT_TYPES.ORDER_CREATED) return;
 
       const db = getDb();
@@ -75,9 +75,9 @@ async function startPaymentConsumer() {
         });
 
         await client.query(
-          `INSERT INTO outbox_events (id, topic, event_key, event_type, payload)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [nextEvent.eventId, config.kafka.topics.orderPayment, String(order.id), nextType, JSON.stringify(nextEvent)]
+          `INSERT INTO outbox_events (id, event_version, topic, event_key, event_type, payload)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [nextEvent.eventId, nextEvent.eventVersion || 1, config.kafka.topics.orderPayment, String(order.id), nextType, JSON.stringify(nextEvent)]
         );
         await client.query('COMMIT');
 

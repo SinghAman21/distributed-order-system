@@ -2,7 +2,7 @@ const { getDb } = require('../../db');
 const logger = require('../../logger');
 const config = require('../../config');
 const { createConsumer } = require('../../kafka');
-const { EVENT_TYPES, createEvent } = require('../schema');
+const { EVENT_TYPES, createEvent, normalizeEvent } = require('../schema');
 const { claimEvent } = require('../idempotency');
 
 async function startInventoryConsumer() {
@@ -15,7 +15,7 @@ async function startInventoryConsumer() {
       const value = message.value?.toString();
       if (!value) return;
 
-      const event = JSON.parse(value);
+      const event = normalizeEvent(JSON.parse(value));
       if (event.eventType !== EVENT_TYPES.PAYMENT_COMPLETED) return;
 
       const db = getDb();
@@ -80,9 +80,9 @@ async function startInventoryConsumer() {
         });
 
         await client.query(
-          `INSERT INTO outbox_events (id, topic, event_key, event_type, payload)
-           VALUES ($1, $2, $3, $4, $5)`,
-          [nextEvent.eventId, config.kafka.topics.orderInventory, String(order.id), nextType, JSON.stringify(nextEvent)]
+          `INSERT INTO outbox_events (id, event_version, topic, event_key, event_type, payload)
+           VALUES ($1, $2, $3, $4, $5, $6)`,
+          [nextEvent.eventId, nextEvent.eventVersion || 1, config.kafka.topics.orderInventory, String(order.id), nextType, JSON.stringify(nextEvent)]
         );
         await client.query('COMMIT');
         logger.info({ topic, partition, orderId: order.id, status: nextStatus }, 'Inventory event processed');

@@ -73,9 +73,9 @@ router.post('/', validate(createOrderSchema), async (req, res) => {
     });
 
     await client.query(
-      `INSERT INTO outbox_events (id, topic, event_key, event_type, payload)
-       VALUES ($1, $2, $3, $4, $5)`,
-      [event.eventId, config.kafka.topics.orderCreated, event.orderId, event.eventType, JSON.stringify(event)]
+      `INSERT INTO outbox_events (id, event_version, topic, event_key, event_type, payload)
+       VALUES ($1, $2, $3, $4, $5, $6)`,
+      [event.eventId, event.eventVersion || 1, config.kafka.topics.orderCreated, event.orderId, event.eventType, JSON.stringify(event)]
     );
 
     await client.query('COMMIT');

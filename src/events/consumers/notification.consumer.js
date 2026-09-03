@@ -2,7 +2,7 @@ const logger = require('../../logger');
 const config = require('../../config');
 const { createConsumer } = require('../../kafka');
 const { getDb } = require('../../db');
-const { EVENT_TYPES } = require('../schema');
+const { EVENT_TYPES, normalizeEvent } = require('../schema');
 const { claimEvent } = require('../idempotency');
 
 async function startNotificationConsumer() {
@@ -16,7 +16,7 @@ async function startNotificationConsumer() {
       const value = message.value?.toString();
       if (!value) return;
 
-      const event = JSON.parse(value);
+      const event = normalizeEvent(JSON.parse(value));
       const orderId = event.orderId;
       const client = await getDb().connect();
 

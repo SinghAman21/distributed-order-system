@@ -52,6 +52,7 @@ CREATE INDEX IF NOT EXISTS idx_order_details_inventory_id ON order_details (inve
 -- Durable deduplication for Kafka consumers. A unique event ID makes retries safe.
 CREATE TABLE IF NOT EXISTS processed_events (
     event_id     TEXT PRIMARY KEY,
+    event_version INTEGER NOT NULL DEFAULT 1,
     event_type   VARCHAR(100),
     order_id     BIGINT,
     processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -59,6 +60,7 @@ CREATE TABLE IF NOT EXISTS processed_events (
 
 CREATE TABLE IF NOT EXISTS outbox_events (
   id UUID PRIMARY KEY,
+  event_version INTEGER NOT NULL DEFAULT 1,
   topic TEXT NOT NULL,
   event_key TEXT NOT NULL,
   event_type TEXT NOT NULL,
@@ -79,6 +81,7 @@ CREATE INDEX outbox_pending_idx
 -- Dead-letter queue for events that exhausted all retries
 CREATE TABLE IF NOT EXISTS outbox_failed_events (
   id UUID PRIMARY KEY,
+  event_version INTEGER NOT NULL DEFAULT 1,
   topic TEXT NOT NULL,
   event_key TEXT NOT NULL,
   event_type TEXT NOT NULL,
@@ -92,3 +95,7 @@ CREATE TABLE IF NOT EXISTS outbox_failed_events (
 CREATE INDEX IF NOT EXISTS idx_outbox_failed_events_created_at ON outbox_failed_events (created_at DESC);
 
 CREATE INDEX IF NOT EXISTS idx_processed_events_order_id ON processed_events (order_id);
+
+ALTER TABLE IF EXISTS processed_events ADD COLUMN IF NOT EXISTS event_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE IF EXISTS outbox_events ADD COLUMN IF NOT EXISTS event_version INTEGER NOT NULL DEFAULT 1;
+ALTER TABLE IF EXISTS outbox_failed_events ADD COLUMN IF NOT EXISTS event_version INTEGER NOT NULL DEFAULT 1;
