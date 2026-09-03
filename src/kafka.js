@@ -86,6 +86,7 @@ async function ensureTopics() {
           { topic: config.kafka.topics.orderCreated, numPartitions: 1, replicationFactor: 1 },
           { topic: config.kafka.topics.orderPayment, numPartitions: 1, replicationFactor: 1 },
           { topic: config.kafka.topics.orderInventory, numPartitions: 1, replicationFactor: 1 },
+          { topic: config.kafka.topics.outboxDlq, numPartitions: 1, replicationFactor: 1 },
         ],
       });
       topicsEnsured = true;

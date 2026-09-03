@@ -1,0 +1,25 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: outbox-publisher
+  namespace: mini-order
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: outbox-publisher
+  template:
+    metadata:
+      labels:
+        app: outbox-publisher
+    spec:
+      containers:
+        - name: outbox-publisher
+          image: amansingh21/mini-order-backend:schema-v3
+          imagePullPolicy: IfNotPresent
+          command: ["node", "src/outbox-publisher.js"]
+          envFrom:
+            - configMapRef:
+                name: backend-config
+            - secretRef:
+                name: backend-secret

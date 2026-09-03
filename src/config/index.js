@@ -20,6 +20,7 @@ const config = {
       orderCreated: process.env.KAFKA_TOPIC_CREATED || 'orders.created',
       orderPayment: process.env.KAFKA_TOPIC_PAYMENT || 'orders.payment',
       orderInventory: process.env.KAFKA_TOPIC_INVENTORY || 'orders.inventory',
+      outboxDlq: process.env.KAFKA_TOPIC_OUTBOX_DLQ || 'outbox.dlq',
     },
   },
 };

@@ -57,7 +57,7 @@ CREATE TABLE IF NOT EXISTS processed_events (
     processed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
-CREATE TABLE outbox_events (
+CREATE TABLE IF NOT EXISTS outbox_events (
   id UUID PRIMARY KEY,
   topic TEXT NOT NULL,
   event_key TEXT NOT NULL,

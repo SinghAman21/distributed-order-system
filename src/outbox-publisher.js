@@ -6,7 +6,7 @@
 // 5. On success → PUBLISHED with published_at
 // 6. On failure → increments attempts with exponential backoff:
 //    30s, 2min, 10min, 30min
-// 7. After MAX_ATTEMPTS → moved to outbox_failed_events (DLQ)
+// 7. After MAX_ATTEMPTS → moved to outbox_failed_events and mirrored to Kafka DLQ topic `outbox.dlq`
 //
 // Replay DLQ: node src/outbox-publisher.js --replay
 
@@ -18,6 +18,7 @@ const config = require('./config');
 const POLL_INTERVAL_MS = 1000;
 const BATCH_SIZE = 50;
 const MAX_ATTEMPTS = 5;
+const STALE_PROCESSING_MINUTES = 10;
 
 const BACKOFF_INTERVALS = [
   "30 seconds",
@@ -29,6 +30,19 @@ const BACKOFF_INTERVALS = [
 function getBackoffInterval(attempt) {
   const index = Math.min(attempt, BACKOFF_INTERVALS.length - 1);
   return BACKOFF_INTERVALS[index];
+}
+
+async function reclaimStaleProcessingEvents(client) {
+  await client.query(
+    `UPDATE outbox_events
+     SET status = 'PENDING',
+         available_at = NOW(),
+         locked_at = NULL,
+         attempts = attempts + 1,
+         last_error = 'Reclaimed after stale processing lock'
+     WHERE status = 'PROCESSING'
+       AND locked_at < NOW() - INTERVAL '${STALE_PROCESSING_MINUTES} minutes'`
+  );
 }
 
 async function fetchPendingEvents(client) {
@@ -49,7 +63,8 @@ async function markProcessing(client, ids) {
   if (!ids.length) return;
   await client.query(
     `UPDATE outbox_events
-     SET status = 'PROCESSING'
+     SET status = 'PROCESSING',
+         locked_at = NOW()
      WHERE id = ANY($1)`,
     [ids]
   );
@@ -58,13 +73,16 @@ async function markProcessing(client, ids) {
 async function markPublished(client, id) {
   await client.query(
     `UPDATE outbox_events
-     SET status = 'PUBLISHED', published_at = NOW()
+     SET status = 'PUBLISHED',
+         published_at = NOW(),
+         locked_at = NULL
      WHERE id = $1`,
     [id]
   );
 }
 
-async function markFailed(client, id, error, attempts) {
+async function markFailed(client, event, error) {
+  const attempts = event.attempts || 0;
   const isDeadLetter = attempts + 1 >= MAX_ATTEMPTS;
   const backoff = getBackoffInterval(attempts);
 
@@ -74,20 +92,23 @@ async function markFailed(client, id, error, attempts) {
        SELECT id, topic, event_key, event_type, payload, attempts + 1, $2, created_at
        FROM outbox_events
        WHERE id = $1`,
-      [id, String(error)]
+      [event.id, String(error)]
     );
-    await client.query('DELETE FROM outbox_events WHERE id = $1', [id]);
-  } else {
-    await client.query(
-      `UPDATE outbox_events
-       SET status = 'PENDING',
-           attempts = attempts + 1,
-           available_at = NOW() + INTERVAL '${backoff}',
-           last_error = $3
-       WHERE id = $1`,
-      [id, backoff, String(error)]
-    );
+    await client.query('DELETE FROM outbox_events WHERE id = $1', [event.id]);
+    return { deadLettered: true };
   }
+
+  await client.query(
+    `UPDATE outbox_events
+     SET status = 'PENDING',
+         attempts = attempts + 1,
+         available_at = NOW() + INTERVAL '${backoff}',
+         locked_at = NULL,
+         last_error = $3
+     WHERE id = $1`,
+    [event.id, backoff, String(error)]
+  );
+  return { deadLettered: false };
 }
 
 async function processBatch() {
@@ -96,6 +117,7 @@ async function processBatch() {
 
   try {
     await client.query('BEGIN');
+    await reclaimStaleProcessingEvents(client);
     const events = await fetchPendingEvents(client);
     if (!events.length) {
       await client.query('ROLLBACK');
@@ -123,7 +145,22 @@ async function processBatch() {
         logger.error({ eventId: event.id, err }, 'Failed to publish outbox event');
         const failClient = await db.connect();
         try {
-          await markFailed(failClient, event.id, err.message, event.attempts);
+          const result = await markFailed(failClient, event, err.message);
+          if (result.deadLettered) {
+            const payload = typeof event.payload === 'string' ? JSON.parse(event.payload) : event.payload;
+            try {
+              await produce(config.kafka.topics.outboxDlq, {
+                ...payload,
+                eventId: event.id,
+                originalTopic: event.topic,
+                deadLetterReason: String(err.message),
+                attempts: (event.attempts || 0) + 1,
+                deadLetteredAt: new Date().toISOString(),
+              });
+            } catch (dlqErr) {
+              logger.error({ eventId: event.id, dlqErr }, 'Failed to publish dead-letter event to Kafka DLQ topic');
+            }
+          }
         } finally {
           failClient.release();
         }

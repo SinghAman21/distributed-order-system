@@ -69,3 +69,15 @@ spec:
   topicName: orders.inventory.dlq
   partitions: 3
   replicas: 2
+---
+apiVersion: kafka.strimzi.io/v1
+kind: KafkaTopic
+metadata:
+  name: outbox-dlq
+  namespace: mini-order
+  labels:
+    strimzi.io/cluster: kafka
+spec:
+  topicName: outbox.dlq
+  partitions: 3
+  replicas: 2

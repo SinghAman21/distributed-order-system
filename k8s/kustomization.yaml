@@ -15,6 +15,7 @@ resources:
   - payment-worker-deployment.yaml
   - inventory-worker-deployment.yaml
   - notification-worker-deployment.yaml
+  - outbox-publisher-deployment.yaml
   - kafka-cluster.yaml
   - kafka-topics.yaml
   - kafka-ui.yaml
