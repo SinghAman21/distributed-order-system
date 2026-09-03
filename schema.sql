@@ -75,4 +75,20 @@ CREATE TABLE outbox_events (
 CREATE INDEX outbox_pending_idx
   ON outbox_events (available_at, created_at)
   WHERE status = 'PENDING';
+
+-- Dead-letter queue for events that exhausted all retries
+CREATE TABLE IF NOT EXISTS outbox_failed_events (
+  id UUID PRIMARY KEY,
+  topic TEXT NOT NULL,
+  event_key TEXT NOT NULL,
+  event_type TEXT NOT NULL,
+  payload JSONB NOT NULL,
+  attempts INTEGER NOT NULL,
+  last_error TEXT,
+  failed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+  created_at TIMESTAMPTZ NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_outbox_failed_events_created_at ON outbox_failed_events (created_at DESC);
+
 CREATE INDEX IF NOT EXISTS idx_processed_events_order_id ON processed_events (order_id);

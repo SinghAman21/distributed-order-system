@@ -4,7 +4,11 @@
 // 3. Marks batch as PROCESSING in one transaction, then commits
 // 4. Publishes each event to Kafka via existing produce()
 // 5. On success → PUBLISHED with published_at
-// 6. On failure → increments attempts, sets available_at to +30s. After 5 attempts → FAILED (dead letter)
+// 6. On failure → increments attempts with exponential backoff:
+//    30s, 2min, 10min, 30min
+// 7. After MAX_ATTEMPTS → moved to outbox_failed_events (DLQ)
+//
+// Replay DLQ: node src/outbox-publisher.js --replay
 
 const { initDatabase, getDb, closeDatabase } = require('./db');
 const logger = require('./logger');
@@ -15,9 +19,21 @@ const POLL_INTERVAL_MS = 1000;
 const BATCH_SIZE = 50;
 const MAX_ATTEMPTS = 5;
 
+const BACKOFF_INTERVALS = [
+  "30 seconds",
+  "2 minutes",
+  "10 minutes",
+  "30 minutes",
+];
+
+function getBackoffInterval(attempt) {
+  const index = Math.min(attempt, BACKOFF_INTERVALS.length - 1);
+  return BACKOFF_INTERVALS[index];
+}
+
 async function fetchPendingEvents(client) {
   const { rows } = await client.query(
-    `SELECT id, topic, event_key, event_type, payload
+    `SELECT id, topic, event_key, event_type, payload, attempts
      FROM outbox_events
      WHERE status = 'PENDING'
        AND available_at <= NOW()
@@ -48,16 +64,30 @@ async function markPublished(client, id) {
   );
 }
 
-async function markFailed(client, id, error) {
-  await client.query(
-    `UPDATE outbox_events
-     SET status = CASE WHEN attempts + 1 >= $2 THEN 'FAILED' ELSE 'PENDING' END,
-         attempts = attempts + 1,
-         available_at = NOW() + INTERVAL '30 seconds',
-         last_error = $3
-     WHERE id = $1`,
-    [id, MAX_ATTEMPTS, String(error)]
-  );
+async function markFailed(client, id, error, attempts) {
+  const isDeadLetter = attempts + 1 >= MAX_ATTEMPTS;
+  const backoff = getBackoffInterval(attempts);
+
+  if (isDeadLetter) {
+    await client.query(
+      `INSERT INTO outbox_failed_events (id, topic, event_key, event_type, payload, attempts, last_error, created_at)
+       SELECT id, topic, event_key, event_type, payload, attempts + 1, $2, created_at
+       FROM outbox_events
+       WHERE id = $1`,
+      [id, String(error)]
+    );
+    await client.query('DELETE FROM outbox_events WHERE id = $1', [id]);
+  } else {
+    await client.query(
+      `UPDATE outbox_events
+       SET status = 'PENDING',
+           attempts = attempts + 1,
+           available_at = NOW() + INTERVAL '${backoff}',
+           last_error = $3
+       WHERE id = $1`,
+      [id, backoff, String(error)]
+    );
+  }
 }
 
 async function processBatch() {
@@ -93,7 +123,7 @@ async function processBatch() {
         logger.error({ eventId: event.id, err }, 'Failed to publish outbox event');
         const failClient = await db.connect();
         try {
-          await markFailed(failClient, event.id, err.message);
+          await markFailed(failClient, event.id, err.message, event.attempts);
         } finally {
           failClient.release();
         }
@@ -109,6 +139,35 @@ async function processBatch() {
 
 let running = true;
 
+async function replayFailedEvents() {
+  const db = getDb();
+  const { rows: failed } = await db.query(
+    `SELECT id, topic, event_key, event_type, payload, attempts, last_error
+     FROM outbox_failed_events
+     ORDER BY failed_at ASC`
+  );
+
+  if (!failed.length) {
+    logger.info('No failed events to replay');
+    return;
+  }
+
+  logger.info({ count: failed.length }, 'Replaying failed events');
+
+  for (const f of failed) {
+    try {
+      const payload = typeof f.payload === 'string'
+        ? JSON.parse(f.payload)
+        : f.payload;
+      await produce(f.topic, payload);
+      await db.query('DELETE FROM outbox_failed_events WHERE id = $1', [f.id]);
+      logger.info({ eventId: f.id, topic: f.topic }, 'Failed event replayed successfully');
+    } catch (err) {
+      logger.error({ eventId: f.id, lastError: f.last_error, err }, 'Failed to replay event');
+    }
+  }
+}
+
 async function pollLoop() {
   while (running) {
     await processBatch();
@@ -118,6 +177,16 @@ async function pollLoop() {
 
 async function start() {
   await initDatabase();
+
+  if (process.argv.includes('--replay')) {
+    await connectProducer();
+    await ensureTopics();
+    await replayFailedEvents();
+    await disconnectProducer();
+    await closeDatabase();
+    process.exit(0);
+  }
+
   await connectProducer();
   await ensureTopics();
   logger.info('Outbox publisher started');
